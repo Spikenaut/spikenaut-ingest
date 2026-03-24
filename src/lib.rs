@@ -20,6 +20,27 @@
 //! ```
 //! where `α = exp(-Δt / τ)` and `τ` is tuned per signal class.
 //!
+//! ## Provenance
+//!
+//! Extracted from Eagle-Lander, a private neuromorphic GPU supervisor (closed-source).
+//! The interpolation bank ran in
+//! production feeding 12-channel blockchain telemetry into a 65,536-neuron LSM
+//! at 10 Hz before being open-sourced as a standalone crate.
+//!
+//! ## References
+//!
+//! - Franklin, G.F., Powell, J.D., & Emami-Naeini, A. (2019).
+//!   *Feedback Control of Dynamic Systems* (8th ed.). Pearson.
+//!   Zero-Order Hold (ZOH) discretization: α = exp(−Δt/τ).
+//!
+//! - Kálmán, R.E. (1960). A New Approach to Linear Filtering and Prediction Problems.
+//!   *Journal of Basic Engineering*, 82(1), 35–45.
+//!   <https://doi.org/10.1115/1.3662552>
+//!   Theoretical basis for recursive state estimation.
+//!
+//! - Ogata, K. (2010). *Modern Control Engineering* (5th ed.). Prentice Hall.
+//!   First-order IIR filter as discrete state-space model.
+//!
 //! ## Usage
 //!
 //! ```rust
