@@ -22,7 +22,7 @@
 //!
 //! ## Provenance
 //!
-//! Extracted from Eagle-Lander, a private neuromorphic GPU supervisor (closed-source).
+//! Extracted from Eagle-Lander, the author's own private neuromorphic GPU supervisor repository (closed-source).
 //! The interpolation bank ran in
 //! production feeding 12-channel blockchain telemetry into a 65,536-neuron LSM
 //! at 10 Hz before being open-sourced as a standalone crate.
