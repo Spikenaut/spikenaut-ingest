@@ -20,17 +20,27 @@
 //! ```
 //! where `α = exp(-Δt / τ)` and `τ` is tuned per signal class.
 //!
-//! ## Integration Guide
+//! ## Core Responsibilities
 //!
-//! To integrate `spikenaut-ingest` into your SNN framework or LLM pipeline:
-//! 1. **Add Dependency**: Include `spikenaut-ingest` in your `Cargo.toml`.
-//!    ```toml
-//!    [dependencies]
-//!    spikenaut_ingest = "0.1.0"
-//!    ```
-//! 2. **Initialize Interpolator**: Use `ChannelInterpolator` or `InterpolatorBank` to smooth blockchain signals to 10Hz.
-//! 3. **Track Rewards**: Use `ConsensusRewardTracker` to convert blockchain events into dopamine spikes for reward-modulated learning.
-//! 4. **Feed Data**: Regularly update with `TripleSnapshot` instances containing raw blockchain data.
+//! - **Acquire raw inputs** from sensors, system telemetry, and optional external feeds.
+//! - **Normalize & sanitize** values into stable numeric ranges.
+//! - **Map named fields** into a deterministic channel vector (`[f32; N]` ABI).
+//! - **Buffer & align** samples in time (timestamps, sample rates, windows).
+//! - **Export snapshots** in a compact, testable format for encoders & simulators.
+//! - **Provide utilities** such as migration helpers, golden fixtures, and CI smoke examples.
+//!
+//! ## Why It Matters for SNN / LLM Fusion
+//!
+//! - **Deterministic inputs** let encoders pre-allocate and map channels to neurons without runtime guessing.
+//! - **Normalization** guarantees consistent value ranges across machines and datasets.
+//! - **Fixed ordering** (the 12-channel layout) acts as a contract every repo can rely on, simplifying fusion and hardware export.
+//! - **Separation of concerns** keeps ingestion pure; hardware/ML logic lives in other crates, making each repo easier to review and license-clean.
+//!
+//! ## Performance Optimizations
+//!
+//! - **SIMD-ready Struct of Arrays (SoA)** layout in `InterpolatorBank` enables automatic vectorization
+//! - **Denormal protection** prevents 10-100x performance degradation when values approach zero
+//! - **Zero-allocation design** keeps all state on the stack for cache efficiency
 //!
 //! ## Provenance
 //!
@@ -38,6 +48,18 @@
 //! The interpolation bank ran in
 //! production feeding 12-channel blockchain telemetry into a 65,536-neuron LSM
 //! at 10 Hz before being open-sourced as a standalone crate.
+//!
+//! ## Architectural Note for spikenaut-synapse
+//!
+//! While this crate was originally designed for blockchain telemetry (Dynex, Qubic, Quai),
+//! the mathematical foundations are valuable for LLM fusion:
+//!
+//! - The **exponential decay** logic can model SNN membrane potential degradation over time
+//! - The **reward tracker** can be repurposed as an "attention reward" system for important LLM tokens
+//! - The **interpolation concepts** apply to any time-series data needing smooth 10Hz sampling
+//!
+//! For pure LLM workloads without blockchain dependencies, consider extracting these mathematical
+//! primitives into a more generic crate.
 //!
 //! ## References
 //!

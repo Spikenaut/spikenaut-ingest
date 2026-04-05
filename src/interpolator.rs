@@ -114,6 +114,10 @@ impl ChannelInterpolator {
     pub fn step(&mut self) -> f32 {
         if !self.initialized { return 0.0; }
         self.state = self.alpha * self.state + (1.0 - self.alpha) * self.observation;
+        // Flush denormals to prevent 10-100x performance degradation
+        if self.state.abs() < 1e-5 {
+            self.state = 0.0;
+        }
         self.state
     }
 
@@ -155,9 +159,13 @@ pub const NUM_BRIDGE_CHANNELS: usize = 12;
 
 /// Multi-channel interpolator bank for all triple-bridge signals.
 ///
+/// Struct of Arrays (SoA) layout for SIMD optimization.
 /// Fits in ~192 bytes on the stack; suitable for supervisor loops.
 pub struct InterpolatorBank {
-    channels: [ChannelInterpolator; NUM_BRIDGE_CHANNELS],
+    pub states: [f32; NUM_BRIDGE_CHANNELS],
+    pub observations: [f32; NUM_BRIDGE_CHANNELS],
+    pub alphas: [f32; NUM_BRIDGE_CHANNELS],
+    pub initialized: [bool; NUM_BRIDGE_CHANNELS],
 }
 
 impl Default for InterpolatorBank {
@@ -167,70 +175,86 @@ impl Default for InterpolatorBank {
 impl InterpolatorBank {
     pub fn new() -> Self {
         Self {
-            channels: [
-                ChannelInterpolator::new(SignalClass::Hardware),    // 0 dynex data rate 1
-                ChannelInterpolator::new(SignalClass::Hardware),    // 1 dynex data rate 2
-                ChannelInterpolator::new(SignalClass::Hardware),    // 2 dynex data rate 3
-                ChannelInterpolator::new(SignalClass::Blockchain),  // 3 qubic data rate 1
-                ChannelInterpolator::new(SignalClass::SlowChain),   // 4 qubic data rate 2
-                ChannelInterpolator::new(SignalClass::Blockchain),  // 5 qu data rate 1
-                ChannelInterpolator::new(SignalClass::SlowChain),   // 6 quai data rate 1
-                ChannelInterpolator::new(SignalClass::SlowChain),   // 7 quai data rate 2
-                ChannelInterpolator::new(SignalClass::SlowChain),   // 8 quai data rate 3
-                ChannelInterpolator::new(SignalClass::Blockchain),  // 9 neuraxon signal 1
-                ChannelInterpolator::new(SignalClass::Blockchain),  // 10 neuraxon signal 2
-                ChannelInterpolator::new(SignalClass::Blockchain),  // 11 neuraxon signal 3
+            states: [0.0; NUM_BRIDGE_CHANNELS],
+            observations: [0.0; NUM_BRIDGE_CHANNELS],
+            alphas: [
+                0.7165, // Hardware - dynex data rate 1
+                0.7165, // Hardware - dynex data rate 2
+                0.7165, // Hardware - dynex data rate 3
+                0.9048, // Blockchain - qubic data rate 1
+                0.9672, // SlowChain - qubic data rate 2
+                0.9048, // Blockchain - qu data rate 1
+                0.9672, // SlowChain - quai data rate 1
+                0.9672, // SlowChain - quai data rate 2
+                0.9672, // SlowChain - quai data rate 3
+                0.9048, // Blockchain - neuraxon signal 1
+                0.9048, // Blockchain - neuraxon signal 2
+                0.9048, // Blockchain - neuraxon signal 3
             ],
+            initialized: [false; NUM_BRIDGE_CHANNELS],
         }
     }
 
     /// Feed raw observations from a [`TripleSnapshot`](crate::TripleSnapshot).
     pub fn observe(&mut self, snap: &crate::snapshot::TripleSnapshot) {
-        self.channels[0].observe(snap.dynex_hashrate_mh);
-        self.channels[1].observe(snap.dynex_power_w);
-        self.channels[2].observe(snap.dynex_gpu_temp_c);
-        self.channels[3].observe(snap.qubic_tick_rate);
-        self.channels[4].observe(snap.qubic_epoch_progress);
-        self.channels[5].observe(snap.qu_price_usd);
-        self.channels[6].observe(snap.quai_gas_price);
-        self.channels[7].observe(snap.quai_tx_count as f32);
-        self.channels[8].observe(snap.quai_block_utilization);
-        self.channels[9].observe(snap.neuraxon_dopamine.clamp(0.0, 1.0));
-        self.channels[10].observe(snap.neuraxon_serotonin.clamp(0.0, 1.0));
-        self.channels[11].observe((snap.neuraxon_its / 2000.0).clamp(0.0, 1.0));
+        self.observations[0] = snap.dynex_hashrate_mh;
+        self.observations[1] = snap.dynex_power_w;
+        self.observations[2] = snap.dynex_gpu_temp_c;
+        self.observations[3] = snap.qubic_tick_rate;
+        self.observations[4] = snap.qubic_epoch_progress;
+        self.observations[5] = snap.qu_price_usd;
+        self.observations[6] = snap.quai_gas_price;
+        self.observations[7] = snap.quai_tx_count as f32;
+        self.observations[8] = snap.quai_block_utilization;
+        self.observations[9] = snap.neuraxon_dopamine.clamp(0.0, 1.0);
+        self.observations[10] = snap.neuraxon_serotonin.clamp(0.0, 1.0);
+        self.observations[11] = (snap.neuraxon_its / 2000.0).clamp(0.0, 1.0);
+        
+        // Initialize any uninitialized channels
+        for i in 0..NUM_BRIDGE_CHANNELS {
+            if !self.initialized[i] {
+                self.states[i] = self.observations[i];
+                self.initialized[i] = true;
+            }
+        }
     }
 
     /// Advance all channels one 10Hz step.
     pub fn step(&mut self) -> [f32; NUM_BRIDGE_CHANNELS] {
-        let mut out = [0.0f32; NUM_BRIDGE_CHANNELS];
-        // TODO: Explore SIMD vectorization for parallel processing of channels.
-        // This could significantly boost performance for SNN loops.
-        let any_initialized = self.channels.iter().any(|ch| ch.is_initialized());
-        if !any_initialized {
-            return out; // Fast-path: no data observed yet, return zeros.
+        // Fast path: if none are initialized, skip the math entirely
+        if !self.initialized.iter().any(|&x| x) {
+            return [0.0; NUM_BRIDGE_CHANNELS];
         }
-        for (i, ch) in self.channels.iter_mut().enumerate() {
-            out[i] = ch.step();
+
+        // Because these are contiguous flat arrays, the compiler will unroll 
+        // this loop and use SIMD vector instructions automatically.
+        for i in 0..NUM_BRIDGE_CHANNELS {
+            if self.initialized[i] {
+                self.states[i] = self.alphas[i] * self.states[i] + 
+                                (1.0 - self.alphas[i]) * self.observations[i];
+                // Flush denormals to prevent 10-100x performance degradation
+                if self.states[i].abs() < 1e-5 {
+                    self.states[i] = 0.0;
+                }
+            }
         }
-        out
+        self.states
     }
 
     /// Current values without advancing state.
     pub fn values(&self) -> [f32; NUM_BRIDGE_CHANNELS] {
-        let mut out = [0.0f32; NUM_BRIDGE_CHANNELS];
-        let any_initialized = self.channels.iter().any(|ch| ch.is_initialized());
-        if !any_initialized {
-            return out; // Fast-path: no data observed yet, return zeros.
+        // Fast path: if none are initialized, return zeros
+        if !self.initialized.iter().any(|&x| x) {
+            return [0.0; NUM_BRIDGE_CHANNELS];
         }
-        for (i, ch) in self.channels.iter().enumerate() {
-            out[i] = ch.value();
-        }
-        out
+        self.states
     }
 
     /// Reset all channels (e.g. after reconnection).
     pub fn reset(&mut self) {
-        for ch in &mut self.channels { ch.reset(); }
+        self.states.fill(0.0);
+        self.observations.fill(0.0);
+        self.initialized.fill(false);
     }
 }
 
